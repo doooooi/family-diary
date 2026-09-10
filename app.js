@@ -177,8 +177,8 @@ function memberAvatar(member, size){
   const known = ['mom','dad','doi','taeng','honi','mori'].includes(member.id);
   const style = member.avatarStyle || 'name';
   const extraClass = style==='adult-man'?'avatar-adult-man':style==='grandpa'?'avatar-grandpa':style==='grandma'?'avatar-grandma':'';
-  const hasExtra = !known && member.kind==='person' && !!extraClass;
-  return `<div class="avatar-art ${known?'avatar-'+member.id:(hasExtra?'avatar-extra '+extraClass:'avatar-fallback')}" style="width:${size}px;height:${size}px">${known||hasExtra?'':escapeHtml(member.label.slice(0,3))}</div>`;
+  const hasExtra = member.kind==='person' && !!extraClass;
+  return `<div class="avatar-art ${hasExtra?'avatar-extra '+extraClass:(known?'avatar-'+member.id:'avatar-fallback')}" style="width:${size}px;height:${size}px">${known||hasExtra?'':escapeHtml(member.label.slice(0,3))}</div>`;
 }
 
 /* ============ RENDER ROOT ============ */
@@ -635,12 +635,16 @@ function renderMemberList(){
         <div class="kind-btn ${m.kind==='person'?'active':''}" data-kind="${m.id}|person">🧑 사람</div>
         <div class="kind-btn ${m.kind==='cat'?'active':''}" data-kind="${m.id}|cat">🐱 고양이</div>
       </div>
-      ${m.kind==='person' ? `<div class="profile-style-row">
-        <button class="profile-style-btn ${(m.avatarStyle||'name')==='name'?'active':''}" data-avatarstyle="${m.id}|name"><span class="profile-style-thumb avatar-fallback">${escapeHtml(m.label.slice(0,2))}</span><span>기본</span></button>
+      ${m.kind==='person' ? `<div class="profile-picker">
+        <div class="profile-picker-title">프로필 선택하기 <span>사진을 눌러 변경</span></div>
+        <div class="profile-style-row">
+        <button class="profile-style-btn ${(m.avatarStyle||'name')==='name'?'active':''}" data-avatarstyle="${m.id}|name"><span class="profile-style-thumb">${memberAvatar({...m,avatarStyle:'name'},54)}</span><span>기본</span></button>
         <button class="profile-style-btn ${m.avatarStyle==='adult-man'?'active':''}" data-avatarstyle="${m.id}|adult-man"><span class="profile-style-thumb"><span class="avatar-art avatar-extra avatar-adult-man"></span></span><span>성인 남성</span></button>
         <button class="profile-style-btn ${m.avatarStyle==='grandpa'?'active':''}" data-avatarstyle="${m.id}|grandpa"><span class="profile-style-thumb"><span class="avatar-art avatar-extra avatar-grandpa"></span></span><span>할아버지</span></button>
         <button class="profile-style-btn ${m.avatarStyle==='grandma'?'active':''}" data-avatarstyle="${m.id}|grandma"><span class="profile-style-thumb"><span class="avatar-art avatar-extra avatar-grandma"></span></span><span>할머니</span></button>
+        </div>
       </div>` : ''}
+      <div class="color-picker-title">대표 색상</div>
       <div class="swatch-row">
         ${PALETTE.map(c=>`<div class="swatch ${m.color===c?'selected':''}" style="background:${c}" data-color="${m.id}|${c}"></div>`).join('')}
       </div>
