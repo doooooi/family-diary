@@ -249,13 +249,14 @@ function renderCalendarTab(){
     const ev = entry && entry.event;
     const eventKey = entry && entry.key;
     const isRange = !!(ev && ev.endDate && ev.endDate > eventKey);
+    const showEventDetails = !isRange || dateStr === eventKey;
     const activeMembers = ev ? members.filter(m => ev.members && ev.members[m.id]) : [];
     const rangeClass = isRange ? `range-day ${dateStr===eventKey?'range-start':''} ${dateStr===ev.endDate?'range-end':''}` : '';
     return `<div class="day-cell ${isToday?'today':''} ${rangeClass}" data-date="${eventKey||dateStr}">
       <div class="day-num">${d}</div>
-      ${ev && ev.time ? `<div class="time-chip-mini">${ev.time}</div>` : ''}
+      ${showEventDetails && ev && ev.time ? `<div class="time-chip-mini">${ev.time}</div>` : ''}
       <div class="stickers">${activeMembers.map(m=>`<div class="sticker-dot" style="background:${m.color}" title="${m.label}">${m.label.charAt(0)}</div>`).join('')}</div>
-      ${ev && ev.note ? `<div class="note-preview">${escapeHtml(ev.note)}</div>` : ''}
+      ${showEventDetails && ev && ev.note ? `<div class="note-preview">${escapeHtml(ev.note)}</div>` : ''}
     </div>`;
   }).join('');
 

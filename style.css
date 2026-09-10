@@ -373,6 +373,9 @@
   .cal-title{padding:7px 16px;border-radius:999px;background:#FFF4EA;box-shadow:inset 0 0 0 1px #F3E2D4;}
   .cal-nav button{box-shadow:0 5px 12px rgba(81,62,48,.09);}
   .day-cell{background:linear-gradient(150deg,#FFFEFC,#FFF9F2);border-color:#EDE2D6;box-shadow:0 3px 8px rgba(83,64,49,.045);}
+  .grid{grid-template-columns:repeat(7,minmax(0,1fr));}
+  .day-cell{min-width:0;overflow:hidden;}
+  .day-cell > *{max-width:100%;}
   .day-cell:hover{border-color:#E6CDBD;box-shadow:0 8px 16px rgba(85,63,48,.11);}
   .day-cell.range-day{background:linear-gradient(145deg,#FFF0E9,#FFF8F2);border-color:#F2C5B6;box-shadow:inset 0 0 0 1px rgba(255,255,255,.7),0 4px 10px rgba(231,143,116,.11);}
   .day-cell.range-start::after{content:'시작';position:absolute;right:4px;top:5px;font-size:8px;font-weight:700;color:#D97761;background:#fff;border-radius:999px;padding:2px 4px;}
