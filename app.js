@@ -41,6 +41,30 @@ function lighten(hex, amt=0.72){
   return '#'+[r,g,b].map(v=>Math.round(v+(255-v)*amt).toString(16).padStart(2,'0')).join('');
 }
 
+
+function normalizeSchedule(raw){
+  const out = {};
+  if(!raw || typeof raw !== 'object') return out;
+
+  Object.entries(raw).forEach(([date, value])=>{
+    const source = Array.isArray(value) ? value : [value];
+    const items = source
+      .filter(ev => ev && typeof ev === 'object')
+      .map(ev => ({
+        ...ev,
+        id: ev.id || genId('ev'),
+        scheduleType: ev.scheduleType === 'personal' ? 'personal' : 'family',
+        ownerId: ev.ownerId || '',
+        time: ev.time || '',
+        endDate: ev.endDate || '',
+        members: ev.members && typeof ev.members === 'object' ? ev.members : {},
+        note: ev.note || '',
+      }));
+    if(items.length) out[date] = items;
+  });
+  return out;
+}
+
 /* ============ STORAGE ============ */
 const SUPABASE_URL = 'https://urkzpylwprqpgvdirvdc.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_XUFvvHSSYBbd8SctX_mOxw_bo1q9UAt';
@@ -64,7 +88,7 @@ async function loadAll(){
     const row = rows[0];
     if(!row) throw new Error('가족 다이어리 저장 행을 찾을 수 없습니다.');
 
-    state.schedule = row.schedule && typeof row.schedule === 'object' ? row.schedule : {};
+    state.schedule = normalizeSchedule(row.schedule);
     state.medData = row.med_data && typeof row.med_data === 'object' ? row.med_data : {};
     if(Array.isArray(row.members) && row.members.length){
       state.members = row.members;
@@ -228,12 +252,53 @@ function monthGridDates(year, month){
   return cells;
 }
 
-function scheduleEntryForDate(dateStr){
-  if(state.schedule[dateStr]) return {key:dateStr, event:state.schedule[dateStr]};
-  for(const [key,event] of Object.entries(state.schedule)){
-    if(event && event.endDate && key < dateStr && dateStr <= event.endDate) return {key,event};
+function scheduleItemsForDate(dateStr){
+  const items = [];
+  Object.entries(state.schedule).forEach(([startDate, bucket])=>{
+    const events = Array.isArray(bucket) ? bucket : [];
+    events.forEach(event=>{
+      const endDate = event.endDate || startDate;
+      if(startDate <= dateStr && dateStr <= endDate){
+        items.push({startDate, event});
+      }
+    });
+  });
+  items.sort((a,b)=>{
+    const ta = a.event.time || '99:99';
+    const tb = b.event.time || '99:99';
+    if(ta !== tb) return ta.localeCompare(tb);
+    return a.startDate.localeCompare(b.startDate);
+  });
+  return items;
+}
+
+function scheduleEventTitle(event){
+  const note = (event.note || '').trim();
+  if(note) return note;
+  if(event.scheduleType === 'personal'){
+    const owner = getMember(event.ownerId);
+    return `${owner ? owner.label : '개인'} 일정`;
   }
-  return null;
+  return '가족 일정';
+}
+
+function scheduleEventPeople(event){
+  if(event.scheduleType === 'personal'){
+    const owner = getMember(event.ownerId);
+    return owner ? [owner] : [];
+  }
+  return calMembers().filter(m => event.members && event.members[m.id]);
+}
+
+function removeScheduleEvent(startDate, eventId){
+  const bucket = Array.isArray(state.schedule[startDate]) ? state.schedule[startDate] : [];
+  state.schedule[startDate] = bucket.filter(ev => ev.id !== eventId);
+  if(!state.schedule[startDate].length) delete state.schedule[startDate];
+}
+
+function shortDate(dateStr){
+  const parts = (dateStr || '').split('-');
+  return parts.length === 3 ? `${Number(parts[1])}.${Number(parts[2])}` : dateStr;
 }
 
 /* ============ CALENDAR TAB ============ */
@@ -245,18 +310,25 @@ function renderCalendarTab(){
     if(d===null) return `<div class="day-cell empty"></div>`;
     const dateStr = state.calYear+'-'+String(state.calMonth+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
     const isToday = dateStr === todayStr;
-    const entry = scheduleEntryForDate(dateStr);
-    const ev = entry && entry.event;
-    const eventKey = entry && entry.key;
-    const isRange = !!(ev && ev.endDate && ev.endDate > eventKey);
-    const showEventDetails = !isRange || dateStr === eventKey;
-    const activeMembers = ev ? members.filter(m => ev.members && ev.members[m.id]) : [];
-    const rangeClass = isRange ? `range-day ${dateStr===eventKey?'range-start':''} ${dateStr===ev.endDate?'range-end':''}` : '';
-    return `<div class="day-cell ${isToday?'today':''} ${rangeClass}" data-date="${eventKey||dateStr}">
+    const entries = scheduleItemsForDate(dateStr);
+    const isRangeDay = entries.some(({startDate,event}) => (event.endDate || '') > startDate);
+    const preview = entries.slice(0,2).map(({event})=>{
+      const people = scheduleEventPeople(event);
+      const owner = event.scheduleType === 'personal' ? getMember(event.ownerId) : null;
+      const accent = owner?.color || people[0]?.color || '#E58F7D';
+      const badge = event.scheduleType === 'personal' ? (owner?.label?.charAt(0) || '나') : '가';
+      const title = scheduleEventTitle(event);
+      const timeText = event.time ? `${event.time} ` : '';
+      return `<div class="calendar-event-mini ${event.scheduleType==='personal'?'personal':'family'}" title="${escapeAttr(title)}">
+        <span class="calendar-event-dot" style="background:${accent}">${escapeHtml(badge)}</span>
+        <span class="calendar-event-text">${escapeHtml(timeText + title)}</span>
+      </div>`;
+    }).join('');
+    const more = entries.length > 2 ? `<div class="calendar-event-more">+${entries.length-2}개</div>` : '';
+
+    return `<div class="day-cell ${isToday?'today':''} ${isRangeDay?'range-day':''}" data-date="${dateStr}">
       <div class="day-num">${d}</div>
-      ${showEventDetails && ev && ev.time ? `<div class="time-chip-mini">${ev.time}</div>` : ''}
-      <div class="stickers">${activeMembers.map(m=>`<div class="sticker-dot" style="background:${m.color}" title="${m.label}">${m.label.charAt(0)}</div>`).join('')}</div>
-      ${showEventDetails && ev && ev.note ? `<div class="note-preview">${escapeHtml(ev.note)}</div>` : ''}
+      <div class="calendar-events-mini">${preview}${more}</div>
     </div>`;
   }).join('');
 
@@ -271,7 +343,7 @@ function renderCalendarTab(){
       <div class="grid">${cellsHtml}</div>
     </div>
     <div class="card" style="padding:14px 18px;">
-      <div style="font-size:13px;color:var(--ink-light);margin-bottom:8px;">여행이나 모임이 있는 날짜를 눌러서 등록해보세요 🐾</div>
+      <div style="font-size:13px;color:var(--ink-light);margin-bottom:8px;">날짜를 눌러 가족 일정과 각자의 일정을 여러 개 등록해보세요 🐾</div>
       <div style="display:flex;gap:14px;flex-wrap:wrap;">
         ${members.map(m=>`<div style="display:flex;align-items:center;gap:6px;font-size:13px;">
           <div style="width:16px;height:16px;border-radius:50%;background:${m.color};"></div>${m.label}
@@ -296,104 +368,268 @@ function attachCalendarEvents(){
 }
 
 /* ---- Schedule Modal ---- */
-function renderScheduleModal(dateStr){
+function renderScheduleModal(selectedDate){
   const existing = document.getElementById('schedule-overlay');
   if(existing) existing.remove();
+
   const members = calMembers();
-  const ev = state.schedule[dateStr] || { time:'', members:{}, note:'' };
-  const [y,m,d] = dateStr.split('-').map(Number);
+  const [y,m,d] = selectedDate.split('-').map(Number);
+  let editingRef = null;
+  let deleteTarget = null;
 
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.id = 'schedule-overlay';
-  overlay.innerHTML = `
-    <div class="sheet">
-      <div class="sheet-handle"></div>
-      <div class="sheet-title">${y}년 ${m}월 ${d}일 📌</div>
-      <div class="sheet-sub">여행이나 모임을 등록해보세요</div>
-
-      <div class="field-block">
-        <div class="field-label">몇 시에 모여요? <span style="font-size:12px;color:var(--ink-light);">선택</span></div>
-        <input type="time" class="time-input" id="ev-time" value="${escapeAttr(ev.time||'')}"/>
-      </div>
-
-      <div class="field-block">
-        <div class="field-label">끝나는 날짜 <span style="font-size:12px;color:var(--ink-light);">여러 날이면 선택</span></div>
-        <input type="date" class="time-input" id="ev-end-date" min="${dateStr}" value="${escapeAttr(ev.endDate||'')}"/>
-      </div>
-
-      <div class="field-block">
-        <div class="field-label">누가 함께해요?</div>
-        <div class="chip-select-row">
-          ${members.map(mem=>{
-            const on = !!(ev.members && ev.members[mem.id]);
-            return `<div class="member-chip ${on?'selected':''}" data-member="${mem.id}">
-              <div class="dot" style="background:${mem.color}">${mem.label.charAt(0)}</div>${mem.label}
-            </div>`;
-          }).join('')}
-        </div>
-      </div>
-
-      <div class="field-block">
-        <div class="field-label">기타사항</div>
-        <textarea class="text-input" id="ev-note" placeholder="예) 작은딸집 놀러가기, 부산 여행 등">${escapeHtml(ev.note||'')}</textarea>
-      </div>
-
-      <div class="sheet-actions">
-        <button class="close-btn" id="close-sheet">저장</button>
-        <button class="cancel-btn" id="cancel-sheet">취소</button>
-      </div>
-      ${state.schedule[dateStr] ? `<button class="delete-btn" id="delete-sheet">이 날 일정 삭제하기</button>` : ''}
-    </div>
-  `;
   document.body.appendChild(overlay);
 
-  let selectedMembers = {};
-  members.forEach(m => selectedMembers[m.id] = !!(ev.members && ev.members[m.id]));
-
-  function cancelEdit(){
+  function closeModal(){
     state.openScheduleDay = null;
     overlay.remove();
   }
-  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) cancelEdit(); });
-  overlay.querySelectorAll('[data-member]').forEach(chip=>{
-    chip.addEventListener('click', ()=>{
-      const mid = chip.dataset.member;
-      selectedMembers[mid] = !selectedMembers[mid];
-      chip.classList.toggle('selected', selectedMembers[mid]);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) closeModal(); });
+
+  function renderList(){
+    const entries = scheduleItemsForDate(selectedDate);
+    overlay.innerHTML = `
+      <div class="sheet schedule-sheet">
+        <div class="sheet-handle"></div>
+        <div class="sheet-title">${y}년 ${m}월 ${d}일 📌</div>
+        <div class="sheet-sub">이 날의 일정을 각각 추가하고 관리할 수 있어요</div>
+
+        <div class="schedule-list">
+          ${entries.length ? entries.map(({startDate,event})=>{
+            const people = scheduleEventPeople(event);
+            const owner = event.scheduleType === 'personal' ? getMember(event.ownerId) : null;
+            const isDelete = deleteTarget && deleteTarget.startDate===startDate && deleteTarget.eventId===event.id;
+            const rangeText = event.endDate && event.endDate > startDate ? `${shortDate(startDate)} ~ ${shortDate(event.endDate)}` : shortDate(startDate);
+            const peopleText = event.scheduleType === 'personal'
+              ? (owner ? owner.label : '개인')
+              : (people.length ? people.map(p=>p.label).join(' · ') : '가족 공통');
+            return `<div class="schedule-item-card ${event.scheduleType==='personal'?'personal':'family'}">
+              <div class="schedule-item-top">
+                <div class="schedule-type-badge ${event.scheduleType==='personal'?'personal':'family'}">${event.scheduleType==='personal' ? '개인 일정' : '가족 일정'}</div>
+                <div class="schedule-item-meta">${escapeHtml(rangeText)}${event.time ? ` · ${escapeHtml(event.time)}` : ''}</div>
+              </div>
+              <div class="schedule-item-title">${escapeHtml(scheduleEventTitle(event))}</div>
+              <div class="schedule-item-people">
+                ${event.scheduleType==='personal' && owner ? `<span class="schedule-person-dot" style="background:${owner.color}"></span>` : ''}
+                ${escapeHtml(peopleText)}
+              </div>
+              ${isDelete ? `
+                <div class="schedule-delete-confirm">
+                  <span>이 일정만 삭제할까요?</span>
+                  <div>
+                    <button class="schedule-confirm-delete" data-confirm-delete="${escapeAttr(startDate+'|'+event.id)}">삭제</button>
+                    <button class="schedule-confirm-cancel">취소</button>
+                  </div>
+                </div>
+              ` : `
+                <div class="schedule-item-actions">
+                  <button class="schedule-edit-btn" data-edit-schedule="${escapeAttr(startDate+'|'+event.id)}">수정</button>
+                  <button class="schedule-remove-btn" data-delete-schedule="${escapeAttr(startDate+'|'+event.id)}">삭제</button>
+                </div>
+              `}
+            </div>`;
+          }).join('') : `
+            <div class="schedule-empty">
+              <div class="schedule-empty-icon">📅</div>
+              <div class="schedule-empty-title">등록된 일정이 없어요</div>
+              <div class="schedule-empty-sub">가족 일정이나 개인 일정을 따로 추가해보세요.</div>
+            </div>
+          `}
+        </div>
+
+        <button class="schedule-add-btn" id="add-schedule">＋ 일정 추가하기</button>
+        <button class="schedule-close-list" id="close-schedule-list">닫기</button>
+      </div>
+    `;
+
+    overlay.querySelector('#close-schedule-list').addEventListener('click', closeModal);
+    overlay.querySelector('#add-schedule').addEventListener('click', ()=>{
+      editingRef = null;
+      deleteTarget = null;
+      renderForm();
     });
-  });
-  document.getElementById('close-sheet').addEventListener('click', trySave);
-  document.getElementById('cancel-sheet').addEventListener('click', cancelEdit);
-  const delBtn = document.getElementById('delete-sheet');
-  if(delBtn){
-    delBtn.addEventListener('click', ()=>{
-      delete state.schedule[dateStr];
+    overlay.querySelectorAll('[data-edit-schedule]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const [startDate,eventId] = btn.dataset.editSchedule.split('|');
+        const bucket = state.schedule[startDate] || [];
+        const event = bucket.find(ev=>ev.id===eventId);
+        if(event){ editingRef = {startDate,event}; deleteTarget = null; renderForm(); }
+      });
+    });
+    overlay.querySelectorAll('[data-delete-schedule]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const [startDate,eventId] = btn.dataset.deleteSchedule.split('|');
+        deleteTarget = {startDate,eventId};
+        renderList();
+      });
+    });
+    overlay.querySelectorAll('[data-confirm-delete]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const [startDate,eventId] = btn.dataset.confirmDelete.split('|');
+        removeScheduleEvent(startDate,eventId);
+        saveSchedule();
+        state.openScheduleDay = selectedDate;
+        render();
+      });
+    });
+    overlay.querySelectorAll('.schedule-confirm-cancel').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ deleteTarget=null; renderList(); });
+    });
+  }
+
+  function renderForm(){
+    const current = editingRef?.event || {scheduleType:'family', ownerId:'', time:'', endDate:'', members:{}, note:''};
+    const originalStart = editingRef?.startDate || selectedDate;
+    let scheduleType = current.scheduleType === 'personal' ? 'personal' : 'family';
+    let ownerId = current.ownerId || '';
+    let selectedMembers = {};
+    members.forEach(mem=> selectedMembers[mem.id] = !!(current.members && current.members[mem.id]));
+
+    overlay.innerHTML = `
+      <div class="sheet schedule-sheet schedule-form-sheet">
+        <div class="sheet-handle"></div>
+        <div class="sheet-title">${editingRef ? '일정 수정' : '새 일정 추가'} ✏️</div>
+        <div class="sheet-sub">가족 전체 일정과 각자의 일정을 구분해서 기록해보세요</div>
+
+        <div class="field-block">
+          <div class="field-label">일정 종류</div>
+          <div class="schedule-type-toggle">
+            <button type="button" class="schedule-type-btn ${scheduleType==='family'?'active':''}" data-schedule-type="family">👨‍👩‍👧‍👦 가족 일정</button>
+            <button type="button" class="schedule-type-btn ${scheduleType==='personal'?'active':''}" data-schedule-type="personal">👤 개인 일정</button>
+          </div>
+        </div>
+
+        <div class="schedule-date-row">
+          <div class="field-block">
+            <div class="field-label">시작 날짜</div>
+            <input type="date" class="time-input" id="ev-start-date" value="${escapeAttr(originalStart)}"/>
+          </div>
+          <div class="field-block">
+            <div class="field-label">끝나는 날짜 <span>선택</span></div>
+            <input type="date" class="time-input" id="ev-end-date" min="${escapeAttr(originalStart)}" value="${escapeAttr(current.endDate||'')}"/>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <div class="field-label">시간 <span>선택</span></div>
+          <input type="time" class="time-input" id="ev-time" value="${escapeAttr(current.time||'')}"/>
+        </div>
+
+        <div class="field-block schedule-family-field" style="display:${scheduleType==='family'?'block':'none'};">
+          <div class="field-label">누가 함께해요? <span>선택하지 않으면 가족 공통</span></div>
+          <div class="chip-select-row">
+            ${members.map(mem=>`<div class="member-chip ${selectedMembers[mem.id]?'selected':''}" data-member="${mem.id}">
+              <div class="dot" style="background:${mem.color}">${escapeHtml(mem.label.charAt(0))}</div>${escapeHtml(mem.label)}
+            </div>`).join('')}
+          </div>
+        </div>
+
+        <div class="field-block schedule-personal-field" style="display:${scheduleType==='personal'?'block':'none'};">
+          <div class="field-label">누구의 일정인가요?</div>
+          <div class="chip-select-row">
+            ${members.map(mem=>`<div class="member-chip ${ownerId===mem.id?'selected':''}" data-owner="${mem.id}">
+              <div class="dot" style="background:${mem.color}">${escapeHtml(mem.label.charAt(0))}</div>${escapeHtml(mem.label)}
+            </div>`).join('')}
+          </div>
+        </div>
+
+        <div class="field-block">
+          <div class="field-label">일정 내용</div>
+          <textarea class="text-input" id="ev-note" placeholder="예) 병원 예약, 친구 만나기, 부산 여행 등">${escapeHtml(current.note||'')}</textarea>
+        </div>
+        <div class="schedule-form-error" id="schedule-form-error"></div>
+
+        <div class="sheet-actions">
+          <button class="close-btn" id="save-schedule-form">저장</button>
+          <button class="cancel-btn" id="cancel-schedule-form">취소</button>
+        </div>
+        ${editingRef ? `<button class="delete-btn" id="delete-from-form">이 일정 삭제하기</button>` : ''}
+      </div>
+    `;
+
+    function syncTypeUI(){
+      overlay.querySelectorAll('[data-schedule-type]').forEach(btn=>btn.classList.toggle('active', btn.dataset.scheduleType===scheduleType));
+      overlay.querySelector('.schedule-family-field').style.display = scheduleType==='family' ? 'block' : 'none';
+      overlay.querySelector('.schedule-personal-field').style.display = scheduleType==='personal' ? 'block' : 'none';
+    }
+
+    overlay.querySelectorAll('[data-schedule-type]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ scheduleType = btn.dataset.scheduleType; syncTypeUI(); });
+    });
+    overlay.querySelectorAll('[data-member]').forEach(chip=>{
+      chip.addEventListener('click', ()=>{
+        const id = chip.dataset.member;
+        selectedMembers[id] = !selectedMembers[id];
+        chip.classList.toggle('selected', selectedMembers[id]);
+      });
+    });
+    overlay.querySelectorAll('[data-owner]').forEach(chip=>{
+      chip.addEventListener('click', ()=>{
+        ownerId = chip.dataset.owner;
+        overlay.querySelectorAll('[data-owner]').forEach(other=>other.classList.toggle('selected', other.dataset.owner===ownerId));
+      });
+    });
+
+    const startInput = overlay.querySelector('#ev-start-date');
+    const endInput = overlay.querySelector('#ev-end-date');
+    startInput.addEventListener('change', ()=>{
+      endInput.min = startInput.value;
+      if(endInput.value && endInput.value < startInput.value) endInput.value = '';
+    });
+
+    overlay.querySelector('#cancel-schedule-form').addEventListener('click', ()=>{ editingRef=null; renderList(); });
+    if(editingRef){
+      overlay.querySelector('#delete-from-form').addEventListener('click', ()=>{
+        deleteTarget = {startDate:editingRef.startDate, eventId:editingRef.event.id};
+        editingRef = null;
+        renderList();
+      });
+    }
+
+    overlay.querySelector('#save-schedule-form').addEventListener('click', ()=>{
+      const error = overlay.querySelector('#schedule-form-error');
+      const startDate = startInput.value || selectedDate;
+      const rawEndDate = endInput.value;
+      const endDate = rawEndDate && rawEndDate > startDate ? rawEndDate : '';
+      const time = overlay.querySelector('#ev-time').value;
+      const note = overlay.querySelector('#ev-note').value.trim();
+
+      if(scheduleType==='personal' && !ownerId){
+        error.textContent = '개인 일정의 가족 구성원을 선택해주세요.';
+        return;
+      }
+      if(!note && !time){
+        error.textContent = '일정 내용이나 시간을 입력해주세요.';
+        return;
+      }
+
+      const eventId = editingRef?.event?.id || genId('ev');
+      const eventMembers = {};
+      members.forEach(mem=>{
+        eventMembers[mem.id] = scheduleType==='personal' ? mem.id===ownerId : !!selectedMembers[mem.id];
+      });
+      const event = {
+        id:eventId,
+        scheduleType,
+        ownerId:scheduleType==='personal' ? ownerId : '',
+        time,
+        endDate,
+        members:eventMembers,
+        note,
+      };
+
+      if(editingRef) removeScheduleEvent(editingRef.startDate,eventId);
+      if(!Array.isArray(state.schedule[startDate])) state.schedule[startDate] = [];
+      state.schedule[startDate].push(event);
       saveSchedule();
-      state.openScheduleDay = null;
-      overlay.remove();
+      state.openScheduleDay = selectedDate;
       render();
     });
   }
 
-  function trySave(){
-    const time = document.getElementById('ev-time').value;
-    const rawEndDate = document.getElementById('ev-end-date').value;
-    const endDate = rawEndDate && rawEndDate > dateStr ? rawEndDate : '';
-    const note = document.getElementById('ev-note').value;
-    const anyMember = Object.values(selectedMembers).some(v=>v);
-    const hasContent = anyMember || note.trim();
-
-    if(!hasContent && !time && !endDate){
-      delete state.schedule[dateStr];
-    } else {
-      state.schedule[dateStr] = { time, endDate, members: selectedMembers, note };
-    }
-    saveSchedule();
-    state.openScheduleDay = null;
-    overlay.remove();
-    render();
-  }
+  renderList();
 }
 
 /* ============ MEDS TAB ============ */
